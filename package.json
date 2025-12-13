@@ -1,7 +1,8 @@
 {
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@react-native-voice/voice": "^3.2.4"
+    "@react-native-voice/voice": "^3.2.4",
+    "expo-camera": "^17.0.10"
   },
   "devDependencies": {
     "@types/node": "^25.0.1"
