@@ -9,9 +9,7 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "com.riku.frontend",
-      "appleTeamId": "3Q7KHQ339U"
+      "supportsTablet": true
     },
     "android": {
       "adaptiveIcon": {
@@ -64,7 +62,9 @@
         {
           "microphonePermission": "会話のためにマイクを使用します。"
         }
-      ]
+      ],
+      "expo-audio",
+      "expo-speech-recognition"
     ],
     "experiments": {
       "typedRoutes": true,

@@ -1,63 +1,69 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useRef } from "react";
 import { StyleSheet, View, Button, Text, ScrollView } from "react-native";
 import { CameraView, CameraType, useCameraPermissions } from "expo-camera";
-import Voice from "@react-native-voice/voice";
 import { ThemedText } from "@/components/themed-text";
+import {
+  useSpeechRecognitionEvent,
+  ExpoSpeechRecognitionModule,
+} from "expo-speech-recognition";
 
 // チャットメッセージの型
 type ChatMessage = {
   id: string;
   text: string;
-  isUser: boolean; // true: ユーザー, false: AI
+  isUser: boolean;
   timestamp: Date;
 };
 
 export default function HomeScreen() {
   const [facing, setFacing] = useState<CameraType>("back");
   const [permission, requestPermission] = useCameraPermissions();
-  const [isChatActive, setIsChatActive] = useState(false); // チャット開始フラグ
+  const [isChatActive, setIsChatActive] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [currentBubbleText, setCurrentBubbleText] = useState(""); // 3Dモデルの吹き出し用
+  const [currentBubbleText, setCurrentBubbleText] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [transcript, setTranscript] = useState("");
-  const transcriptRef = useRef(""); // 最新のtranscriptを保持
-  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // 無音タイマー
-  const isSendingRef = useRef(false); // 送信中のフラグ
-  const isVoiceActiveRef = useRef(false); // 音声認識の状態管理
   const scrollViewRef = useRef<ScrollView>(null);
+
+  // 音声認識イベント
+  useSpeechRecognitionEvent("result", (event) => {
+    const transcribedText = event.results[0]?.transcript;
+    if (transcribedText) {
+      setTranscript(transcribedText);
+    }
+  });
+
+  useSpeechRecognitionEvent("end", async () => {
+    console.log("音声認識終了");
+    setIsRecording(false);
+
+    if (transcript.trim()) {
+      await sendToBackend(transcript);
+      setTranscript("");
+    }
+  });
 
   // チャット開始
   const startChat = async () => {
     setIsChatActive(true);
-    // 音声認識を開始
-    await startRecording();
   };
 
   // チャット停止
   const stopChat = async () => {
     setIsChatActive(false);
-    // 音声認識を停止
-    if (isVoiceActiveRef.current) {
-      await Voice.stop();
-      isVoiceActiveRef.current = false;
+    if (isRecording) {
+      ExpoSpeechRecognitionModule.stop();
     }
-    // タイマーをクリア
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-    }
+    setIsRecording(false);
   };
 
   // バックエンドに送信する関数
   const sendToBackend = async (text: string) => {
-    if (isSendingRef.current || !text.trim()) {
-      return;
-    }
+    if (!text.trim()) return;
 
-    isSendingRef.current = true;
     try {
       console.log("✅ 確定テキスト:", text);
 
-      // ユーザーのメッセージを追加
       const userMessage: ChatMessage = {
         id: Date.now().toString(),
         text: text,
@@ -65,212 +71,83 @@ export default function HomeScreen() {
         timestamp: new Date(),
       };
       setChatMessages((prev) => [...prev, userMessage]);
-      setCurrentBubbleText(""); // 吹き出しをクリア
+      setCurrentBubbleText("");
 
-      // スクロールを最下部に
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
       }, 100);
 
-      // バックエンドに送信（後で実装）
-      // const response = await fetch('http://...', {
-      //   method: 'POST',
-      //   body: JSON.stringify({ message: text }),
-      // });
-      // const data = await response.json();
+      // バックエンドにリクエスト送信 (エンドポイントを /chat に修正)
+      // Windowsの場合、ローカルIPアドレスを使用
+      const response = await fetch('http://127.0.0.1:8787/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message: text }),  // ← 音声認識のテキストがここに入る
+      });
 
-      // 仮の応答（後で削除）
-      const data = { reply: "応答: " + text };
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
 
-      // AIの応答を追加
+      const data = await response.json();
+
       const aiMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
-        text: data.reply,
+        text: data.reply,  // ← バックエンドからのGeminiレスポンス
         isUser: false,
         timestamp: new Date(),
       };
       setChatMessages((prev) => [...prev, aiMessage]);
-      setCurrentBubbleText(data.reply); // 吹き出しに表示
+      setCurrentBubbleText(data.reply);
 
-      // スクロールを最下部に
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
       }, 100);
-
-      // TTS再生は後で実装
     } catch (error) {
       console.error("❌ バックエンド送信エラー:", error);
-    } finally {
-      isSendingRef.current = false;
+      
+      // エラーメッセージを表示
+      const errorMessage: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        text: "エラーが発生しました。もう一度お試しください。",
+        isUser: false,
+        timestamp: new Date(),
+      };
+      setChatMessages((prev) => [...prev, errorMessage]);
     }
   };
 
-  // 無音タイマーをリセット
-  const resetSilenceTimer = () => {
-    // 既存のタイマーをクリア
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-    }
-
-    // 3秒後にバックエンドに送信
-    silenceTimerRef.current = setTimeout(async () => {
-      const finalText = transcriptRef.current;
-      if (finalText && finalText.trim()) {
-        // 確定テキストをコンソールに表示
-        console.log("✅ 確定テキスト:", finalText);
-
-        // 送信前にテキストを取得（送信後にリセットされるため）
-        const textToSend = finalText;
-
-        // 送信
-        await sendToBackend(textToSend);
-
-        // 送信後、音声認識を一度停止して再開（新しいセッションとして開始）
-        try {
-          if (isVoiceActiveRef.current) {
-            await Voice.stop();
-            isVoiceActiveRef.current = false;
-          }
-          setTranscript("");
-          transcriptRef.current = "";
-
-          // 停止が完了するまで待つ
-          await new Promise((resolve) => setTimeout(resolve, 800));
-
-          // 既に開始されていないことを確認してから開始
-          if (!isVoiceActiveRef.current) {
-            await Voice.start("ja-JP");
-            console.log("🔄 新しいセッションを開始しました");
-          }
-        } catch (error: any) {
-          console.error("再開エラー:", error);
-          isVoiceActiveRef.current = false;
-
-          // "already started"エラーの場合は無視
-          const errorMessage = error?.error?.message || error?.message || "";
-          if (errorMessage.includes("already started")) {
-            console.log("⚠️ 音声認識は既に開始されています。スキップします。");
-            return;
-          }
-
-          // エラー時は1秒後に再試行
-          setTimeout(() => {
-            startRecording();
-          }, 1000);
-        }
-      }
-    }, 3000); // 3秒
-  };
-
-  // 音声認識の初期化と自動開始
-  useEffect(() => {
-    // 音声認識開始時
-    Voice.onSpeechStart = () => {
-      console.log("🎤 音声認識開始");
-      setIsRecording(true);
-      isVoiceActiveRef.current = true;
-    };
-
-    // 音声認識の結果をリアルタイムで取得
-    Voice.onSpeechResults = (e) => {
-      if (e.value && e.value[0]) {
-        const text = e.value[0];
-        setTranscript(text);
-        transcriptRef.current = text; // refにも保存
-        // リアルタイムテキストのログは削除（確定テキストだけ表示）
-
-        // 音声が検出されたら、無音タイマーをリセット
-        resetSilenceTimer();
-      }
-    };
-
-    // 音声認識が終了したタイミング（一時的な無音）
-    Voice.onSpeechEnd = () => {
-      console.log("🔇 一時的な無音を検出");
-      // 3秒間無音が続いたら自動送信される（resetSilenceTimerで処理）
-    };
-
-    // エラー処理
-    Voice.onSpeechError = (e: any) => {
-      const errorMessage = e?.error?.message || e?.message || "";
-
-      // "No speech detected"エラーは無視（音声が検出されなかっただけ）
-      if (errorMessage.includes("No speech detected")) {
-        // 無視して継続
-        return;
-      }
-
-      // "already started"エラーの処理
-      if (errorMessage.includes("already started")) {
-        console.log(
-          "⚠️ 音声認識は既に開始されています。再開をスキップします。"
-        );
-        // 状態を更新
-        isVoiceActiveRef.current = true;
-        setIsRecording(true);
-        return;
-      }
-
-      // その他のエラーはログに出力
-      console.error("❌ 音声認識エラー:", e);
-      setIsRecording(false);
-      isVoiceActiveRef.current = false;
-
-      // エラー時も自動的に再開を試みる（既に開始されていない場合のみ）
-      setTimeout(() => {
-        if (!isVoiceActiveRef.current) {
-          startRecording();
-        }
-      }, 1000);
-    };
-
-    // アプリ起動時は自動開始しない（チャット開始ボタンで開始）
-
-    return () => {
-      if (silenceTimerRef.current) {
-        clearTimeout(silenceTimerRef.current);
-      }
-      Voice.destroy().then(Voice.removeAllListeners);
-    };
-  }, []); // 依存配列を空にして、一度だけ登録
-
-  // 音声認識開始（再開用）
+  // 音声認識開始
   const startRecording = async () => {
     try {
-      // 既に開始されている場合はスキップ
-      if (isVoiceActiveRef.current) {
-        console.log("⚠️ 音声認識は既に開始されています。スキップします。");
+      const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!result.granted) {
+        console.warn("音声認識の権限が拒否されました");
         return;
       }
 
-      await Voice.start("ja-JP");
-      setTranscript("");
-      transcriptRef.current = "";
-    } catch (error: any) {
-      console.error("音声認識開始エラー:", error);
-      setIsRecording(false);
-      isVoiceActiveRef.current = false;
-
-      // "already started"エラーの場合は無視
-      const errorMessage = error?.error?.message || error?.message || "";
-      if (errorMessage.includes("already started")) {
-        console.log("⚠️ 音声認識は既に開始されています。スキップします。");
-        isVoiceActiveRef.current = true;
-        setIsRecording(true);
-        return;
-      }
-
-      // エラー時は1秒後に再試行
-      setTimeout(() => {
-        if (!isVoiceActiveRef.current) {
-          startRecording();
-        }
-      }, 1000);
+      ExpoSpeechRecognitionModule.start({
+        lang: "ja-JP",
+        interimResults: true,
+        maxAlternatives: 1,
+        continuous: true,
+      });
+      setIsRecording(true);
+      console.log("🎤 音声認識開始");
+    } catch (err) {
+      console.error("音声認識開始失敗", err);
     }
+  };
+
+  // 音声認識停止
+  const stopRecording = async () => {
+    ExpoSpeechRecognitionModule.stop();
+    setIsRecording(false);
   };
 
   if (!permission) {
-    // カメラの権限情報を読み込み中
     return (
       <View style={styles.container}>
         <Text>読み込み中...</Text>
@@ -279,7 +156,6 @@ export default function HomeScreen() {
   }
 
   if (!permission.granted) {
-    // カメラの権限が許可されていない場合
     return (
       <View style={styles.container}>
         <ThemedText style={styles.message}>カメラの許可が必要です</ThemedText>
@@ -288,21 +164,16 @@ export default function HomeScreen() {
     );
   }
 
-  // カメラが許可されている場合、カメラビューを表示
   return (
     <View style={styles.container}>
       <CameraView style={styles.camera} facing={facing} />
 
-      {/* メインコンテンツエリア */}
       <View style={styles.contentArea}>
-        {/* 左側：AR用の3Dモデルエリア（後で実装） */}
         <View style={styles.arArea}>
-          {/* 3Dモデルは後で実装 */}
           <View style={styles.arPlaceholder}>
             <ThemedText style={styles.arPlaceholderText}>3Dモデル</ThemedText>
           </View>
 
-          {/* 吹き出し */}
           {currentBubbleText ? (
             <View style={styles.speechBubble}>
               <ThemedText style={styles.speechBubbleText}>
@@ -312,7 +183,6 @@ export default function HomeScreen() {
           ) : null}
         </View>
 
-        {/* 右側：LINE風のチャットUI */}
         {isChatActive && (
           <View style={styles.chatArea}>
             <ScrollView
@@ -340,17 +210,37 @@ export default function HomeScreen() {
                   </ThemedText>
                 </View>
               ))}
+
+              {/* リアルタイムで認識中のテキストを表示 */}
+              {isRecording && transcript && (
+                <View
+                  style={[
+                    styles.messageContainer,
+                    styles.userMessage,
+                    { opacity: 0.6 },
+                  ]}
+                >
+                  <ThemedText style={styles.userMessageText}>
+                    {transcript}...
+                  </ThemedText>
+                </View>
+              )}
             </ScrollView>
           </View>
         )}
       </View>
 
-      {/* 下部：ボタンエリア */}
       <View style={styles.buttonArea}>
         <Button
           title={isChatActive ? "チャット停止" : "チャット開始"}
           onPress={isChatActive ? stopChat : startChat}
         />
+        {isChatActive && (
+          <Button
+            title={isRecording ? "音声停止" : "音声開始"}
+            onPress={isRecording ? stopRecording : startRecording}
+          />
+        )}
         <Button
           title="カメラ切り替え"
           onPress={() => setFacing(facing === "back" ? "front" : "back")}
@@ -365,7 +255,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   camera: {
-    ...StyleSheet.absoluteFillObject,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
   },
   contentArea: {
     flex: 1,
